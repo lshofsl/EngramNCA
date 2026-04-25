@@ -224,11 +224,15 @@ class GenePropCA(torch.nn.Module):
             ra_stack = torch.cat([new_a, new_b, new_d], dim=1)
             x[:, 20:23] = self.modulator_net(ra_stack)
 
+        #Gene positions in the channel dimension 
+        gene_start = 13 
+        gene_end = 13 + self.gene_size
+
         if is_dual:
             gene = x[:, x.shape[1] - self.gene_size -1:-1, ...]
             final = x[:, -1:, ...]
         else:
-            gene = x[:, x.shape[1] - self.gene_size:, ...]
+            gene = x[:, gene_start:gene_end, ...]
         y = reduced_perception(x, 0)
         y = self.w2(torch.relu(self.w1(y)))
         b, c, h, w = y.shape
