@@ -129,6 +129,48 @@ class GeneCA(torch.nn.Module):
         x = torch.cat((x, gene), dim=1)
         return x
 
+#Slow RA functions 
+#In each cell of the NCA we are going to add the RA states this will help us to understand the dynamics of training 
+
+
+#Laplacian Kernel
+lap_kernel = torch.tensor([[1.0, 2.0, 1.0], 
+                           [2.0, -12., 2.0], 
+                           [1.0, 2.0, 1.0]], dtype=torch.float32, device="cuda:0")
+lap_kernel = (lap_kernel / 12.0).view(1, 1, 3, 3) # Normalization 
+
+def ring_attractor_phases(a, b):
+    local_amplitude = torch.sqrt(a**2 + b**2 + 1e-6)
+    local_angle = torch.atan2(b, a)
+    return local_amplitude, local_angle
+
+def discrete_update(a, b, d, alpha, beta, omega, kappa, K, I_a, I_b, I_d, dt): 
+
+    diff_a = torch.nn.functional.conv2d(a, lap_kernel, padding=1)
+    new_a = a + dt * (-alpha * a + omega * b + K * diff_a + I_a)
+    
+    diff_b = torch.nn.functional.conv2d(b, lap_kernel, padding=1)
+    new_b = b + dt * (-alpha * b - omega * a + K * diff_b + I_b)
+    
+    diff_d = torch.nn.functional.conv2d(d, lap_kernel, padding=1)
+    new_d = d + dt * (-beta * d + kappa * diff_d + I_d)
+    
+    return new_a, new_b, new_d
+
+def slow_perception(rgba, hidden):   #Here we take the NCA channels and compute the local input of the slow controller
+    # v: RGBA, h 2 first hidden channels 
+    alpha = rgba[:, 3:4, :, :] # Extract ONLY the alpha channel
+    h_layers = hidden[:, 0:2, :, :]
+
+    eroded = -torch.nn.functional.max_pool2d(-alpha, kernel_size=3, stride=1, padding=1)
+    edges = alpha - eroded
+
+    lap_alpha = torch.nn.functional.conv2d(alpha, lap_kernel, padding=1)
+
+    # Q has 5 channels: [alpha, edges, lap, h1, h2]
+    Q = torch.cat([alpha, edges, lap_alpha, h_layers], dim=1)
+    return Q
+
 
 class GenePropCA(torch.nn.Module):
     def __init__(self, chn=12, hidden_n=96, gene_size=3):
@@ -139,9 +181,48 @@ class GenePropCA(torch.nn.Module):
         self.w2.weight.data.zero_()
         self.gene_size = gene_size
 
-    def forward(self, x, update_rate=0.5, is_dual = False):
+        #Parameter of the RA 
+        self.alpha = torch.nn.Parameter(torch.tensor(0.1)) # Decay rate of the activator/phase
+        self.beta  = torch.nn.Parameter(torch.tensor(0.1)) # Decay rate of the inhibitor/injury
+        self.omega = torch.nn.Parameter(torch.tensor(0.0)) # Angular drift
+        self.K     = torch.nn.Parameter(torch.tensor(0.5)) # Diffusion strength
+        self.kappa = torch.nn.Parameter(torch.tensor(0.5)) # Spatial coupling between activator and inhibitor
+        self.dt    = 0.1
+
+        # Inputs for the slow perception of the RA 
+        # Q -> Ia, Ib, Id
+        self.slow_input_net = torch.nn.Conv2d(5, 3, kernel_size=1)
+        # Translation from the RA state to the gene modulation output
+        # a,b,d -> m_g, m_s, m_r
+        self.modulator_net = torch.nn.Conv2d(3, 3, kernel_size=1)
 
 
+    def forward(self, x, update_rate=0.5, is_dual = False, step =0, k=4):
+        #Slow RA updates 
+        if step % k == 0:
+            a, b, d = x[:, 16:17], x[:, 17:18], x[:, 18:19]
+            
+            # x[:, :4] is RGBA, x[:, 4:16] is hidden
+            Q = slow_perception(x[:, :4], x[:, 4:16]) 
+            
+            # Get Drive Signals from your new layer
+            I_signals = self.slow_input_net(Q)
+            Ia, Ib, Id = I_signals[:, 0:1], I_signals[:, 1:2], I_signals[:, 2:3]
+            
+            new_a, new_b, new_d = discrete_update(
+                a, b, d, self.alpha, self.beta, self.omega, 
+                self.kappa, self.K, Ia, Ib, Id, dt=0.1
+            )
+            
+            # Update the RA channels in place
+            x[:, 16:17] = new_a
+            x[:, 17:18] = new_b
+            x[:, 18:19] = new_d
+            
+            # Generate the Modulatory Signal (Channels 20-22)
+            # This is what the 'gene' (Fast NCA) will actually "see"
+            ra_stack = torch.cat([new_a, new_b, new_d], dim=1)
+            x[:, 20:23] = self.modulator_net(ra_stack)
 
         if is_dual:
             gene = x[:, x.shape[1] - self.gene_size -1:-1, ...]
