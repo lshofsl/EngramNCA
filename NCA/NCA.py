@@ -157,6 +157,23 @@ def discrete_update(a, b, d, alpha, beta, omega, kappa, K, I_a, I_b, I_d, dt):
     
     return new_a, new_b, new_d
 
+def consensus_update(a, b, dt, mode='local'):
+    if mode == 'local':
+        a_avg = torch.nn.functional.avg_pool2d(a, 5, 1, 2)
+        b_avg = torch.nn.functional.avg_pool2d(b, 5, 1, 2)
+    else:
+        a_avg = torch.mean(a, dim=(2, 3), keepdim=True)
+        b_avg = torch.mean(b, dim=(2, 3), keepdim=True)
+    
+    #Re-normalize the average so consensus doesn't shrink the ring
+    rho_avg = torch.sqrt(a_avg**2 + b_avg**2 + 1e-6)
+    a_avg = a_avg / rho_avg
+    b_avg = b_avg / rho_avg
+
+    a = a + dt * (a_avg - a)
+    b = b + dt * (b_avg - b)
+    return a, b
+
 def slow_perception(rgba, hidden):   #Here we take the NCA channels and compute the local input of the slow controller
     # v: RGBA, h 2 first hidden channels 
     alpha = rgba[:, 3:4, :, :] # Extract ONLY the alpha channel
@@ -213,6 +230,12 @@ class GenePropCA(torch.nn.Module):
                 a, b, d, self.alpha, self.beta, self.omega, 
                 self.kappa, self.K, Ia, Ib, Id, dt=0.1
             )
+
+            # Get the new RA phases closer to the mean 
+            new_a, new_b = consensus_update(new_a, new_b, dt=0.1, mode='local')
+
+            # Phase 
+            phase, amplitude = ring_attractor_phases(new_a, new_b)
             
             # Update the RA channels in place
             x[:, 16:17] = new_a
@@ -248,7 +271,7 @@ class GenePropCA(torch.nn.Module):
         else:
             x = x[:, :x.shape[1] - self.gene_size, ...]
             x = torch.cat((x, gene), dim=1)
-        return x
+        return x, phase, amplitude
 
 
 def gradnorm_perception(x):
