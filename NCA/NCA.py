@@ -218,12 +218,12 @@ class GenePropCA(torch.nn.Module):
     def forward(self, x, update_rate=0.5, is_dual=False, step=0, k=4):
         # 1. Initialize phase/amplitude from current state 
         # This ensures they exist even if the 'if' block is skipped
-        a_init, b_init = x[:, 16:17], x[:, 17:18]
+        a_init, b_init = x[:, 15:16], x[:, 16:17]   #Considering 21 channels 
         phase, amplitude = ring_attractor_phases(a_init, b_init)
 
         # Slow RA updates 
         if step % k == 0:
-            a, b, d = x[:, 16:17], x[:, 17:18], x[:, 18:19]
+            a, b, d = x[:, 15:16], x[:, 16:17], x[:, 17:18]
             Q = slow_perception(x[:, :4], x[:, 4:16]) 
             I_signals = self.slow_input_net(Q)
             Ia, Ib, Id = I_signals[:, 0:1], I_signals[:, 1:2], I_signals[:, 2:3]
@@ -238,19 +238,18 @@ class GenePropCA(torch.nn.Module):
             # Update return values for this specific step
             phase, amplitude = ring_attractor_phases(new_a, new_b)
             
-            x[:, 16:17] = new_a
-            x[:, 17:18] = new_b
-            x[:, 18:19] = new_d
+            x[:, 15:16] = new_a
+            x[:, 16:17] = new_b
+            x[:, 17:18] = new_d
             
             ra_stack = torch.cat([new_a, new_b, new_d], dim=1)
-            x[:, 20:23] = self.modulator_net(ra_stack)
+            x[:, 19:20] = self.modulator_net(ra_stack)
 
         # --- Fast NCA Logic ---
-        gene_start = 13 
-        gene_end = 13 + self.x, phase, amplitude.gene_size
-
+        gene_start =  self.chn - self.gene_size - 6
+        gene_end = self.chn - 6
         if is_dual:
-            gene = x[:, x.shape[1] - self.gene_size - 1:-1, ...]
+            gene = x[:, gene_start:gene_end - 1:-1, ...]
             final = x[:, -1:, ...]
         else:
             gene = x[:, gene_start:gene_end, ...]
