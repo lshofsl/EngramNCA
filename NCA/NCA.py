@@ -224,7 +224,7 @@ class GenePropCA(torch.nn.Module):
         # Slow RA updates 
         if step % k == 0:
             a, b, d = x[:, 15:16], x[:, 16:17], x[:, 17:18]
-            Q = slow_perception(x[:, :4], x[:, 4:16]) 
+            Q = slow_perception(x[:, :4], x[:, 4:12]) 
             I_signals = self.slow_input_net(Q)
             Ia, Ib, Id = I_signals[:, 0:1], I_signals[:, 1:2], I_signals[:, 2:3]
             
@@ -243,7 +243,7 @@ class GenePropCA(torch.nn.Module):
             x[:, 17:18] = new_d
             
             ra_stack = torch.cat([new_a, new_b, new_d], dim=1)
-            x[:, 19:20] = self.modulator_net(ra_stack)
+            x[:, 18:21] = self.modulator_net(ra_stack)
 
         # --- Fast NCA Logic ---
         gene_start =  self.chn - self.gene_size - 6
@@ -267,10 +267,10 @@ class GenePropCA(torch.nn.Module):
         gene = gene + y * update_mask * pre_life_mask
 
         if is_dual:
-            x_base = x[:, :x.shape[1] - self.gene_size - 1, ...]
+            x_base = x[:, :x.shape[1] - self.gene_size - 6- 1, ...]
             x = torch.cat((x_base, gene, final), dim=1)
         else:
-            x_base = x[:, :x.shape[1] - self.gene_size, ...]
+            x_base = x[:, :x.shape[1] - self.gene_size - 6, ...]
             x = torch.cat((x_base, gene), dim=1)
             
         return x, phase, amplitude
