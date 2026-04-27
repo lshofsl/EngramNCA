@@ -109,23 +109,24 @@ class ReducedCA(torch.nn.Module):
 
 
 class GeneCA(torch.nn.Module):
-    def __init__(self, chn=12, hidden_n=96, gene_size=3):
+    def __init__(self, chn=12, hidden_n=96, gene_size=3, recurrent_gene =3, modulatory_gene=3):
         super().__init__()
         self.chn = chn
         self.w1 = torch.nn.Conv2d(chn + 3 * (chn), hidden_n, 1)
-        self.w2 = torch.nn.Conv2d(hidden_n, chn - gene_size, 1, bias=False)
+        GeneCA_layers = chn - gene_size - recurrent_gene - modulatory_gene
+        self.w2 = torch.nn.Conv2d(hidden_n, GeneCA_layers, 1, bias=False)
         self.w2.weight.data.zero_()
-        self.gene_size = gene_size
+        self.channels = gene_size + recurrent_gene + modulatory_gene
 
     def forward(self, x, update_rate=0.5):
-        gene = x[:, -self.gene_size:, ...]
+        gene = x[:, -self.channels:, ...]
         y = reduced_perception(x, 0)
         y = self.w2(torch.relu(self.w1(y)))
         b, c, h, w = y.shape
         update_mask = (torch.rand(b, 1, h, w, device="cuda:0") + update_rate).floor()
         xmp = torch.nn.functional.pad(x[:, None, 3, ...], pad=[1, 1, 1, 1], mode="circular")
         pre_life_mask = torch.nn.functional.max_pool2d(xmp, 3, 1, 0, ).cuda() > 0.1
-        x = x[:, :x.shape[1] - self.gene_size, ...] + y * update_mask * pre_life_mask
+        x = x[:, :x.shape[1] - self.channels, ...] + y * update_mask * pre_life_mask
         x = torch.cat((x, gene), dim=1)
         return x
 
@@ -214,63 +215,65 @@ class GenePropCA(torch.nn.Module):
         self.modulator_net = torch.nn.Conv2d(3, 3, kernel_size=1)
 
 
-    def forward(self, x, update_rate=0.5, is_dual = False, step =0, k=4):
-        #Slow RA updates 
+    def forward(self, x, update_rate=0.5, is_dual=False, step=0, k=4):
+        # 1. Initialize phase/amplitude from current state 
+        # This ensures they exist even if the 'if' block is skipped
+        a_init, b_init = x[:, 16:17], x[:, 17:18]
+        phase, amplitude = ring_attractor_phases(a_init, b_init)
+
+        # Slow RA updates 
         if step % k == 0:
             a, b, d = x[:, 16:17], x[:, 17:18], x[:, 18:19]
-            
-            # x[:, :4] is RGBA, x[:, 4:16] is hidden
             Q = slow_perception(x[:, :4], x[:, 4:16]) 
-            
-            # Get Drive Signals from your new layer
             I_signals = self.slow_input_net(Q)
             Ia, Ib, Id = I_signals[:, 0:1], I_signals[:, 1:2], I_signals[:, 2:3]
             
             new_a, new_b, new_d = discrete_update(
                 a, b, d, self.alpha, self.beta, self.omega, 
-                self.kappa, self.K, Ia, Ib, Id, dt=0.1
+                self.kappa, self.K, Ia, Ib, Id, dt=self.dt
             )
 
-            # Get the new RA phases closer to the mean 
-            new_a, new_b = consensus_update(new_a, new_b, dt=0.1, mode='local')
+            new_a, new_b = consensus_update(new_a, new_b, dt=self.dt, mode='local')
 
-            # Phase 
+            # Update return values for this specific step
             phase, amplitude = ring_attractor_phases(new_a, new_b)
             
-            # Update the RA channels in place
             x[:, 16:17] = new_a
             x[:, 17:18] = new_b
             x[:, 18:19] = new_d
             
-            # Generate the Modulatory Signal (Channels 20-22)
-            # This is what the 'gene' (Fast NCA) will actually "see"
             ra_stack = torch.cat([new_a, new_b, new_d], dim=1)
             x[:, 20:23] = self.modulator_net(ra_stack)
 
-        #Gene positions in the channel dimension 
+        # --- Fast NCA Logic ---
         gene_start = 13 
-        gene_end = 13 + self.gene_size
+        gene_end = 13 + self.x, phase, amplitude.gene_size
 
         if is_dual:
-            gene = x[:, x.shape[1] - self.gene_size -1:-1, ...]
+            gene = x[:, x.shape[1] - self.gene_size - 1:-1, ...]
             final = x[:, -1:, ...]
         else:
             gene = x[:, gene_start:gene_end, ...]
+            
         y = reduced_perception(x, 0)
         y = self.w2(torch.relu(self.w1(y)))
         b, c, h, w = y.shape
-        update_mask = (torch.rand(b, 1, h, w, device="cuda:0") + update_rate).floor()
+        
+        # Ensure update_mask is on the same device as x
+        update_mask = (torch.rand(b, 1, h, w, device=x.device) + update_rate).floor()
+        
         xmp = torch.nn.functional.pad(x[:, None, 3, ...], pad=[1, 1, 1, 1], mode="circular")
-        pre_life_mask = torch.nn.functional.max_pool2d(xmp, 3, 1, 0, ).cuda() > 0.1
+        pre_life_mask = (torch.nn.functional.max_pool2d(xmp, 3, 1, 0) > 0.1).to(x.device)
 
-        gene = gene + y  * update_mask* pre_life_mask
+        gene = gene + y * update_mask * pre_life_mask
 
         if is_dual:
-            x = x[:, :x.shape[1] - self.gene_size -1, ...]
-            x = torch.cat((x, gene, final), dim=1)
+            x_base = x[:, :x.shape[1] - self.gene_size - 1, ...]
+            x = torch.cat((x_base, gene, final), dim=1)
         else:
-            x = x[:, :x.shape[1] - self.gene_size, ...]
-            x = torch.cat((x, gene), dim=1)
+            x_base = x[:, :x.shape[1] - self.gene_size, ...]
+            x = torch.cat((x_base, gene), dim=1)
+            
         return x, phase, amplitude
 
 
