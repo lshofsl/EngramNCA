@@ -260,18 +260,35 @@ class GenePropCA(torch.nn.Module):
         xmp = torch.nn.functional.pad(x[:, None, 3, ...], pad=[1, 1, 1, 1], mode="circular")
         pre_life_mask = (torch.nn.functional.max_pool2d(xmp, 3, 1, 0) > 0.1).to(x.device)
 
-        # 4. Update the Gene channels
+        # --- Fast NCA Logic ---
+        # 1. Identify the exact channels (Map: 0:4 RGBA, 4:12 Hidden, 12:15 Gene, 15:18 RA, 18:21 Mod)
+        gene = x[:, 12:15, ...]
+            
+        # 2. Perception & Update
+        # w1/w2 should be configured for your gene size
+        y = self.w2(torch.relu(self.w1(reduced_perception(x, 0))))
+        
+        # 3. Standard NCA masking
+        update_mask = (torch.rand(b, 1, h, w, device=x.device) + update_rate).floor()
+        xmp = torch.nn.functional.pad(x[:, None, 3, ...], pad=[1, 1, 1, 1], mode="circular")
+        pre_life_mask = (torch.nn.functional.max_pool2d(xmp, 3, 1, 0) > 0.1).to(x.device)
+
+        # 4. Update the Gene 
         new_gene = gene + y * update_mask * pre_life_mask
 
-        # 5. RECONSTRUCT (The "Sandwich")
-        # Keep 0:12 (RGBA/Hidden), add new_gene (12:15), keep 15:21 (RA/Modulators)
-        x = torch.cat([
-            x[:, :gene_start, ...], # Channels 0-11
-            new_gene,               # Channels 12-14
-            x[:, gene_end:, ...]    # Channels 15-20 
-        ], dim=1)
+        # 5. THE ABSOLUTE RECONSTRUCTION (Forces 21 channels)
+        # We manually stitch the prefix, the updated middle, and the RA/Mod suffix
+        prefix = x[:, :12, ...]     # 12 channels (RGBA + Hidden)
+        suffix = x[:, 15:21, ...]   # 6 channels (RA + Modulators)
+        
+        # Check if suffix is empty for some reason
+        if suffix.shape[1] == 0:
+             # If this prints, it means x entered the function already too small!
+             print("DEBUG: Suffix is empty! Check input x shape.")
+
+        x_final = torch.cat([prefix, new_gene, suffix], dim=1)
             
-        return x, phase, amplitude
+        return x_final, phase, amplitude
 
 
 def gradnorm_perception(x):
