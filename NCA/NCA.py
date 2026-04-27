@@ -246,32 +246,30 @@ class GenePropCA(torch.nn.Module):
             x[:, 18:21] = self.modulator_net(ra_stack)
 
         # --- Fast NCA Logic ---
-        gene_start =  self.chn - self.gene_size - 6
-        gene_end = self.chn - 6
-        if is_dual:
-            gene = x[:, gene_start:gene_end - 1:-1, ...]
-            final = x[:, -1:, ...]
-        else:
-            gene = x[:, gene_start:gene_end, ...]
+        # 1. Identify where the Gene Encoding lives (12:15)
+        gene_start, gene_end = 12, 15
+        gene = x[:, gene_start:gene_end, ...]
             
+        # 2. Perception & Update (y)
         y = reduced_perception(x, 0)
-        y = self.w2(torch.relu(self.w1(y)))
+        y = self.w2(torch.relu(self.w1(y))) # w2 must output 3 channels to match gene_size
+        
+        # 3. Masks
         b, c, h, w = y.shape
-        
-        # Ensure update_mask is on the same device as x
         update_mask = (torch.rand(b, 1, h, w, device=x.device) + update_rate).floor()
-        
         xmp = torch.nn.functional.pad(x[:, None, 3, ...], pad=[1, 1, 1, 1], mode="circular")
         pre_life_mask = (torch.nn.functional.max_pool2d(xmp, 3, 1, 0) > 0.1).to(x.device)
 
-        gene = gene + y * update_mask * pre_life_mask
+        # 4. Update the Gene channels
+        new_gene = gene + y * update_mask * pre_life_mask
 
-        if is_dual:
-            x_base = x[:, :x.shape[1] - self.gene_size - 6- 1, ...]
-            x = torch.cat((x_base, gene, final), dim=1)
-        else:
-            x_base = x[:, :x.shape[1] - self.gene_size - 6, ...]
-            x = torch.cat((x_base, gene), dim=1)
+        # 5. RECONSTRUCT (The "Sandwich")
+        # Keep 0:12 (RGBA/Hidden), add new_gene (12:15), keep 15:21 (RA/Modulators)
+        x = torch.cat([
+            x[:, :gene_start, ...], # Channels 0-11
+            new_gene,               # Channels 12-14
+            x[:, gene_end:, ...]    # Channels 15-20 
+        ], dim=1)
             
         return x, phase, amplitude
 
