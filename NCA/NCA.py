@@ -214,16 +214,21 @@ class GenePropCA(torch.nn.Module):
         # a,b,d -> m_g, m_s, m_r
         self.modulator_net = torch.nn.Conv2d(3, 3, kernel_size=1)
 
-
     def forward(self, x, update_rate=0.5, is_dual=False, step=0, k=4):
-        # 1. Initialize phase/amplitude from current state 
-        # This ensures they exist even if the 'if' block is skipped
-        a_init, b_init = x[:, 15:16], x[:, 16:17]   #Considering 21 channels 
-        phase, amplitude = ring_attractor_phases(a_init, b_init)
+        # 1. Initialize variables from x
+        # Use .clone() to ensure we aren't creating a 'view' that might be modified
+        prefix = x[:, :12, ...].clone()    # RGBA + Hidden
+        gene = x[:, 12:15, ...].clone()      # Gene Encoding
+        a = x[:, 15:16].clone()
+        b = x[:, 16:17].clone()
+        d = x[:, 17:18].clone()
+        mod = x[:, 18:21].clone()
 
-        # Slow RA updates 
+        # Phase/Amplitude initialization
+        phase, amplitude = ring_attractor_phases(a, b)
+
+        # 2. Slow RA updates
         if step % k == 0:
-            a, b, d = x[:, 15:16], x[:, 16:17], x[:, 17:18]
             Q = slow_perception(x[:, :4], x[:, 4:12]) 
             I_signals = self.slow_input_net(Q)
             Ia, Ib, Id = I_signals[:, 0:1], I_signals[:, 1:2], I_signals[:, 2:3]
@@ -232,64 +237,40 @@ class GenePropCA(torch.nn.Module):
                 a, b, d, self.alpha, self.beta, self.omega, 
                 self.kappa, self.K, Ia, Ib, Id, dt=self.dt
             )
-
             new_a, new_b = consensus_update(new_a, new_b, dt=self.dt, mode='local')
 
-            # Update return values for this specific step
+            # Update return values
             phase, amplitude = ring_attractor_phases(new_a, new_b)
             
-            x[:, 15:16] = new_a
-            x[:, 16:17] = new_b
-            x[:, 17:18] = new_d
-            
-            ra_stack = torch.cat([new_a, new_b, new_d], dim=1)
-            x[:, 18:21] = self.modulator_net(ra_stack)
+            # Use NEW variables, do NOT assign back to x[:, 15:16]
+            a, b, d = new_a, new_b, new_d
+            ra_stack = torch.cat([a, b, d], dim=1)
+            mod = self.modulator_net(ra_stack)
 
-        # --- Fast NCA Logic ---
-        # 1. Identify where the Gene Encoding lives (12:15)
-        gene_start, gene_end = 12, 15
-        gene = x[:, gene_start:gene_end, ...]
-            
-        # 2. Perception & Update (y)
-        y = reduced_perception(x, 0)
-        y = self.w2(torch.relu(self.w1(y))) # w2 must output 3 channels to match gene_size
-        
-        # 3. Masks
-        b, c, h, w = y.shape
-        update_mask = (torch.rand(b, 1, h, w, device=x.device) + update_rate).floor()
-        xmp = torch.nn.functional.pad(x[:, None, 3, ...], pad=[1, 1, 1, 1], mode="circular")
-        pre_life_mask = (torch.nn.functional.max_pool2d(xmp, 3, 1, 0) > 0.1).to(x.device)
-
-        # --- Fast NCA Logic ---
-        # 1. Identify the exact channels (Map: 0:4 RGBA, 4:12 Hidden, 12:15 Gene, 15:18 RA, 18:21 Mod)
-        gene = x[:, 12:15, ...]
-            
-        # 2. Perception & Update
-        # w1/w2 should be configured for your gene size
+        # 3. Fast NCA Logic
         y = self.w2(torch.relu(self.w1(reduced_perception(x, 0))))
         
-        # 3. Standard NCA masking
-        update_mask = (torch.rand(b, 1, h, w, device=x.device) + update_rate).floor()
-        xmp = torch.nn.functional.pad(x[:, None, 3, ...], pad=[1, 1, 1, 1], mode="circular")
+        # Masks
+        b_sz, c_sz, h, w = y.shape
+        update_mask = (torch.rand(b_sz, 1, h, w, device=x.device) + update_rate).floor()
+        xmp = torch.nn.functional.pad(x[:, 3:4, ...], pad=[1, 1, 1, 1], mode="circular")
         pre_life_mask = (torch.nn.functional.max_pool2d(xmp, 3, 1, 0) > 0.1).to(x.device)
 
-        # 4. Update the Gene 
-        new_gene = gene + y * update_mask * pre_life_mask
+        # 4. Update the Gene (Non-inplace)
+        new_gene = gene + (y * update_mask * pre_life_mask)
 
-        # 5. THE ABSOLUTE RECONSTRUCTION (Forces 21 channels)
-        # We manually stitch the prefix, the updated middle, and the RA/Mod suffix
-        prefix = x[:, :12, ...]     # 12 channels (RGBA + Hidden)
-        suffix = x[:, 15:21, ...]   # 6 channels (RA + Modulators)
-        
-        # Check if suffix is empty for some reason
-        if suffix.shape[1] == 0:
-             # If this prints, it means x entered the function already too small!
-             print("DEBUG: Suffix is empty! Check input x shape.")
-
-        x_final = torch.cat([prefix, new_gene, suffix], dim=1)
+        # 5. THE FINAL STITCH (Constructing a fresh tensor)
+        # We concatenate all parts to create x_final without ever modifying the input x
+        x_final = torch.cat([
+            prefix,     # 0:12
+            new_gene,   # 12:15
+            a,          # 15
+            b,          # 16
+            d,          # 17
+            mod         # 18:21
+        ], dim=1)
             
         return x_final, phase, amplitude
-
 
 def gradnorm_perception(x):
   grad = perchannel_conv(x, torch.stack([sobel_x, sobel_x.T]))
