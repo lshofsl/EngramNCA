@@ -147,32 +147,38 @@ def ring_attractor_phases(a, b):
 
 def discrete_update(a, b, d, alpha, beta, omega, kappa, K, I_a, I_b, I_d, dt): 
 
-    diff_a = torch.nn.functional.conv2d(a, lap_kernel, padding=1)
+    a_padded = torch.nn.functional.pad(a, [1,1,1,1], mode='circular')  #Mantain the circular shape in all the network 
+    diff_a = torch.nn.functional.conv2d(a_padded, lap_kernel, padding=0)
     new_a = a + dt * (-alpha * a + omega * b + K * diff_a + I_a)
     
-    diff_b = torch.nn.functional.conv2d(b, lap_kernel, padding=1)
+    b_padded = torch.nn.functional.pad(b, [1,1,1,1], mode='circular')
+    diff_b = torch.nn.functional.conv2d(b_padded, lap_kernel, padding=0)
     new_b = b + dt * (-alpha * b - omega * a + K * diff_b + I_b)
     
-    diff_d = torch.nn.functional.conv2d(d, lap_kernel, padding=1)
+    d_padded = torch.nn.functional.pad(d, [1,1,1,1], mode='circular')
+    diff_d = torch.nn.functional.conv2d(d_padded, lap_kernel, padding=0)
     new_d = d + dt * (-beta * d + kappa * diff_d + I_d)
     
     return new_a, new_b, new_d
 
 def consensus_update(a, b, dt, mode='local'):
     if mode == 'local':
-        a_avg = torch.nn.functional.avg_pool2d(a, 5, 1, 2)
+        a_avg = torch.nn.functional.avg_pool2d(a, 5, 1, 2)   # Kuramoto-like local averaging for phase synchronization
         b_avg = torch.nn.functional.avg_pool2d(b, 5, 1, 2)
     else:
         a_avg = torch.mean(a, dim=(2, 3), keepdim=True)
         b_avg = torch.mean(b, dim=(2, 3), keepdim=True)
-    
-    #Re-normalize the average so consensus doesn't shrink the ring
-    rho_avg = torch.sqrt(a_avg**2 + b_avg**2 + 1e-6)
-    a_avg = a_avg / rho_avg
-    b_avg = b_avg / rho_avg
 
-    a = a + dt * (a_avg - a)
-    b = b + dt * (b_avg - b)
+    # Normalization over the average to maintain the amplitude of the local state
+    rho_avg = torch.sqrt(a_avg**2 + b_avg**2 + 1e-6)
+    rho_local = torch.sqrt(a**2 + b**2 + 1e-6)
+    
+    # Consensus update with amplitude normalization
+    a_avg_norm = (a_avg / rho_avg) * rho_local
+    b_avg_norm = (b_avg / rho_avg) * rho_local
+
+    a = a + dt * (a_avg_norm - a)
+    b = b + dt * (b_avg_norm - b)
     return a, b
 
 def slow_perception(rgba, hidden):   #Here we take the NCA channels and compute the local input of the slow controller
@@ -216,7 +222,6 @@ class GenePropCA(torch.nn.Module):
 
     def forward(self, x, update_rate=0.5, is_dual=False, step=0, k=4):
         # 1. Initialize variables from x
-        # Use .clone() to ensure we aren't creating a 'view' that might be modified
         prefix = x[:, :12, ...].clone()    # RGBA + Hidden
         gene = x[:, 12:15, ...].clone()      # Gene Encoding
         a = x[:, 15:16].clone()
@@ -228,7 +233,7 @@ class GenePropCA(torch.nn.Module):
         phase, amplitude = ring_attractor_phases(a, b)
 
         # 2. Slow RA updates
-        if step % k == 0:
+        if step % k == 0 or step == 0: # Update the RA every k steps (including the first step)
             Q = slow_perception(x[:, :4], x[:, 4:12]) 
             I_signals = self.slow_input_net(Q)
             Ia, Ib, Id = I_signals[:, 0:1], I_signals[:, 1:2], I_signals[:, 2:3]
@@ -256,8 +261,8 @@ class GenePropCA(torch.nn.Module):
         xmp = torch.nn.functional.pad(x[:, 3:4, ...], pad=[1, 1, 1, 1], mode="circular")
         pre_life_mask = (torch.nn.functional.max_pool2d(xmp, 3, 1, 0) > 0.1).to(x.device)
 
-        # 4. Update the Gene (Non-inplace)
-        new_gene = gene + (y * update_mask * pre_life_mask)
+        # 4. Update the Gene including the modulation from the RA (mod) and the masks
+        new_gene = gene + (y * update_mask * pre_life_mask) * torch.sigmoid(mod)
 
         # 5. THE FINAL STITCH (Constructing a fresh tensor)
         # We concatenate all parts to create x_final without ever modifying the input x
