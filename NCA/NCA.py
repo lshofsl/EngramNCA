@@ -262,7 +262,8 @@ class GenePropCA(torch.nn.Module):
         pre_life_mask = (torch.nn.functional.max_pool2d(xmp, 3, 1, 0) > 0.1).to(x.device)
 
         # 4. Update the Gene including the modulation from the RA (mod) and the masks
-        new_gene = gene + (y * update_mask * pre_life_mask) * torch.sigmoid(mod)
+        # En GenePropCA.forward() — mod controla qué genes propagar y dónde
+        new_gene = gene + (y * update_mask * pre_life_mask) * torch.tanh(mod)
 
         # 5. THE FINAL STITCH (Constructing a fresh tensor)
         # We concatenate all parts to create x_final without ever modifying the input x
