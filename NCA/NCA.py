@@ -1,3 +1,4 @@
+from multiprocessing import dummy
 from sys import prefix
 
 import torch
@@ -202,8 +203,15 @@ class GenePropCA(torch.nn.Module):
     def __init__(self, chn=12, hidden_n=96, gene_size=3):
         super().__init__()
         self.chn = chn
-        self.w1 = torch.nn.Conv2d(4*chn, hidden_n, 1)
-        self.w2 = torch.nn.Conv2d(hidden_n,  gene_size, 1, bias=False)
+        self.gene_size = gene_size
+    
+        # Compute input size dynamically like IsoCA
+        dummy = torch.zeros([1, chn, 8, 8])
+        perc_chn = reduced_perception(dummy[:, :chn - gene_size + gene_size], 0).shape[1]
+
+    
+        self.w1 = torch.nn.Conv2d(perc_chn, hidden_n, 1)
+        self.w2 = torch.nn.Conv2d(hidden_n, gene_size, 1, bias=False)
         self.w2.weight.data.zero_()
         self.gene_size = gene_size
 
