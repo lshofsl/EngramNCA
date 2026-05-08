@@ -206,8 +206,8 @@ class GenePropCA(torch.nn.Module):
         self.gene_size = gene_size
     
         # Compute input size dynamically like IsoCA
-        dummy = torch.zeros([1, chn, 8, 8])
-        perc_chn = reduced_perception(dummy[:, :chn + gene_size],  device="cuda:0").shape[1]
+        dummy = torch.zeros([1, 15, 8, 8], device="cuda:0")
+        perc_chn = reduced_perception(dummy, 0).shape[1]
 
     
         self.w1 = torch.nn.Conv2d(perc_chn, hidden_n, 1)
