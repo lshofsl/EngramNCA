@@ -123,7 +123,7 @@ class GeneCA(torch.nn.Module):
 
     def forward(self, x, update_rate=0.5):
         gene = x[:, -self.channels:, ...]
-        y = reduced_perception(x, 0)
+        y = reduced_perception(x[:, :self.chn+ self.gene_size], 0)   #Only perceive the RGBA + hidden + genes but not the RA states or the modulatory  channels
         y = self.w2(torch.relu(self.w1(y)))
         b, c, h, w = y.shape
         update_mask = (torch.rand(b, 1, h, w, device="cuda:0") + update_rate).floor()
@@ -191,7 +191,8 @@ def slow_perception(rgba, hidden):   #Here we take the NCA channels and compute 
     eroded = -torch.nn.functional.max_pool2d(-alpha, kernel_size=3, stride=1, padding=1)
     edges = alpha - eroded
 
-    lap_alpha = torch.nn.functional.conv2d(alpha, lap_kernel, padding=1)
+    alpha_padded = torch.nn.functional.pad(alpha, [1,1,1,1], mode='circular')
+    lap_alpha = torch.nn.functional.conv2d(alpha_padded, lap_kernel, padding=0)
 
     # Q has 5 channels: [alpha, edges, lap, h1, h2]
     Q = torch.cat([alpha, edges, lap_alpha, h_layers], dim=1)
