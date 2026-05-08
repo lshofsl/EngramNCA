@@ -1,3 +1,5 @@
+from sys import prefix
+
 import torch
 
 def perchannel_conv(x, filters):
@@ -219,9 +221,10 @@ class GenePropCA(torch.nn.Module):
         # Translation from the RA state to the gene modulation output
         # a,b,d -> m_g, m_s, m_r
         self.modulator_net = torch.nn.Conv2d(3, 3, kernel_size=1)
+        self.mod_proj = torch.nn.Conv2d(3, hidden_n, 1)   # Projection of the RA modulation into the hidden space of the NCA network
 
     def forward(self, x, update_rate=0.5, is_dual=False, step=0, k=4):
-        # 1. Initialize variables from x
+        #Initialize variables from x
         prefix = x[:, :12, ...].clone()    # RGBA + Hidden
         gene = x[:, 12:15, ...].clone()      # Gene Encoding
         a = x[:, 15:16].clone()
@@ -232,7 +235,7 @@ class GenePropCA(torch.nn.Module):
         # Phase/Amplitude initialization
         phase, amplitude = ring_attractor_phases(a, b)
 
-        # 2. Slow RA updates
+        # Slow RA updates
         if step % k == 0 or step == 0: # Update the RA every k steps (including the first step)
             Q = slow_perception(x[:, :4], x[:, 4:12]) 
             I_signals = self.slow_input_net(Q)
@@ -244,16 +247,17 @@ class GenePropCA(torch.nn.Module):
             )
             new_a, new_b = consensus_update(new_a, new_b, dt=self.dt, mode='local')
 
-            # Update return values
-            phase, amplitude = ring_attractor_phases(new_a, new_b)
-            
-            # Use NEW variables, do NOT assign back to x[:, 15:16]
+            # Use of the new RA states to compute the modulation for the gene propagation
             a, b, d = new_a, new_b, new_d
             ra_stack = torch.cat([a, b, d], dim=1)
             mod = self.modulator_net(ra_stack)
+            
 
         # 3. Fast NCA Logic
-        y = self.w2(torch.relu(self.w1(reduced_perception(x, 0))))
+        fast_input = reduced_perception(x[:, :15], 0) # We only use the RGBA + Gene for the fast perception, not the RA states
+        h = self.w1(fast_input)          
+        h = h + self.mod_proj(mod)        # We project the RA modulation into the hidden space. We do this as we work with 2 time scales, the RA modulation should affect the hidden representation of the NCA before the output layer.
+        y = self.w2(torch.relu(h)) 
         
         # Masks
         b_sz, c_sz, h, w = y.shape
@@ -263,7 +267,9 @@ class GenePropCA(torch.nn.Module):
 
         # 4. Update the Gene including the modulation from the RA (mod) and the masks
         # En GenePropCA.forward() — mod controla qué genes propagar y dónde
-        new_gene = gene + (y * update_mask * pre_life_mask) * torch.tanh(mod)
+        new_gene = gene + y * update_mask * pre_life_mask
+
+        
 
         # 5. THE FINAL STITCH (Constructing a fresh tensor)
         # We concatenate all parts to create x_final without ever modifying the input x
@@ -275,7 +281,8 @@ class GenePropCA(torch.nn.Module):
             d,          # 17
             mod         # 18:21
         ], dim=1)
-            
+
+        phase, amplitude = ring_attractor_phases(a, b)
         return x_final, phase, amplitude
 
 def gradnorm_perception(x):
