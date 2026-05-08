@@ -207,7 +207,7 @@ class GenePropCA(torch.nn.Module):
     
         # Compute input size dynamically like IsoCA
         dummy = torch.zeros([1, chn, 8, 8])
-        perc_chn = reduced_perception(dummy[:, :chn - gene_size + gene_size], 0).shape[1]
+        perc_chn = reduced_perception(dummy[:, :chn + gene_size], 0).shape[1]
 
     
         self.w1 = torch.nn.Conv2d(perc_chn, hidden_n, 1)
