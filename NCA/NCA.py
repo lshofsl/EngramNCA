@@ -116,7 +116,7 @@ class GeneCA(torch.nn.Module):
         super().__init__()
         self.chn = chn
         self.w1 = torch.nn.Conv2d(chn + 3 * (chn), hidden_n, 1)
-        GeneCA_layers = chn - gene_size - recurrent_gene - modulatory_gene
+        GeneCA_layers = chn  - recurrent_gene - modulatory_gene   # GeneNCA update only the RGBA+hidden channels but perceives all the channles except RA and modulatory gene channels
         self.w2 = torch.nn.Conv2d(hidden_n, GeneCA_layers, 1, bias=False)
         self.w2.weight.data.zero_()
         self.channels = gene_size + recurrent_gene + modulatory_gene
@@ -230,6 +230,8 @@ class GenePropCA(torch.nn.Module):
         # a,b,d -> m_g, m_s, m_r
         self.modulator_net = torch.nn.Conv2d(3, 3, kernel_size=1)
         self.mod_proj = torch.nn.Conv2d(3, hidden_n, 1)   # Projection of the RA modulation into the hidden space of the NCA network
+        torch.nn.init.normal_(self.mod_proj.weight, std=0.01)
+        torch.nn.init.zeros_(self.mod_proj.bias)  #Initialization near of zero of the modulation projection to avoid instabilities at the beginning of training
 
     def forward(self, x, update_rate=0.5, is_dual=False, step=0, k=4):
         #Initialize variables from x
@@ -264,7 +266,7 @@ class GenePropCA(torch.nn.Module):
         # 3. Fast NCA Logic
         fast_input = reduced_perception(x[:, :15], 0) # We only use the RGBA + Gene for the fast perception, not the RA states
         h = self.w1(fast_input)          
-        h = h + self.mod_proj(mod)        # We project the RA modulation into the hidden space. We do this as we work with 2 time scales, the RA modulation should affect the hidden representation of the NCA before the output layer.
+        h = h + torch.tanh(self.mod_proj(mod))        # We project the RA modulation into the hidden space. We do this as we work with 2 time scales, the RA modulation should affect the hidden representation of the NCA before the output layer.
         y = self.w2(torch.relu(h)) 
         
         # Masks
@@ -273,13 +275,9 @@ class GenePropCA(torch.nn.Module):
         xmp = torch.nn.functional.pad(x[:, 3:4, ...], pad=[1, 1, 1, 1], mode="circular")
         pre_life_mask = (torch.nn.functional.max_pool2d(xmp, 3, 1, 0) > 0.1).to(x.device)
 
-        # 4. Update the Gene including the modulation from the RA (mod) and the masks
-        # En GenePropCA.forward() — mod controla qué genes propagar y dónde
+        #  Update of the Gene including the masks
         new_gene = gene + y * update_mask * pre_life_mask
 
-        
-
-        # 5. THE FINAL STITCH (Constructing a fresh tensor)
         # We concatenate all parts to create x_final without ever modifying the input x
         x_final = torch.cat([
             prefix,     # 0:12
