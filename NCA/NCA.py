@@ -116,7 +116,7 @@ class GeneCA(torch.nn.Module):
         super().__init__()
         self.chn = chn
         self.w1 = torch.nn.Conv2d(chn + 3 * (chn), hidden_n, 1)
-        GeneCA_layers = chn  - recurrent_gene - modulatory_gene   # GeneNCA update only the RGBA+hidden channels but perceives all the channles except RA and modulatory gene channels
+        GeneCA_layers = chn  - gene_size -recurrent_gene - modulatory_gene   # GeneNCA update only the RGBA+hidden channels but perceives all the channles except RA and modulatory gene channels
         self.w2 = torch.nn.Conv2d(hidden_n, GeneCA_layers, 1, bias=False)
         self.w2.weight.data.zero_()
         self.channels = gene_size + recurrent_gene + modulatory_gene
@@ -135,7 +135,6 @@ class GeneCA(torch.nn.Module):
 
 #Slow RA functions 
 #In each cell of the NCA we are going to add the RA states this will help us to understand the dynamics of training 
-
 
 #Laplacian Kernel
 lap_kernel = torch.tensor([[1.0, 2.0, 1.0], 
