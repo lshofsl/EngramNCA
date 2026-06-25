@@ -111,29 +111,6 @@ class ReducedCA(torch.nn.Module):
         return x
 
 
-class GeneCA(torch.nn.Module):
-    def __init__(self, chn=12, hidden_n=96, gene_size=3, recurrent_gene =3, modulatory_gene=3):
-        super().__init__()
-        self.chn = chn
-        self.gene_size = gene_size 
-        self.w1 = torch.nn.Conv2d(chn + 3 * (chn), hidden_n, 1)
-        GeneCA_layers = chn  - gene_size -recurrent_gene - modulatory_gene   # GeneNCA update only the RGBA+hidden channels but perceives all the channles except RA and modulatory gene channels
-        self.w2 = torch.nn.Conv2d(hidden_n, GeneCA_layers, 1, bias=False)
-        self.w2.weight.data.zero_()
-        self.channels = gene_size + recurrent_gene + modulatory_gene
-
-    def forward(self, x, update_rate=0.5):
-        gene = x[:, -self.channels:, ...]
-        y = reduced_perception(x[:, :self.chn+ self.gene_size], 0)   #Only perceive the RGBA + hidden + genes but not the RA states or the modulatory  channels
-        y = self.w2(torch.relu(self.w1(y)))
-        b, c, h, w = y.shape
-        update_mask = (torch.rand(b, 1, h, w, device="cuda:0") + update_rate).floor()
-        xmp = torch.nn.functional.pad(x[:, None, 3, ...], pad=[1, 1, 1, 1], mode="circular")
-        pre_life_mask = torch.nn.functional.max_pool2d(xmp, 3, 1, 0, ).cuda() > 0.1
-        x = x[:, :x.shape[1] - self.channels, ...] + y * update_mask * pre_life_mask
-        x = torch.cat((x, gene), dim=1)
-        return x
-
 #Slow RA functions 
 #In each cell of the NCA we are going to add the RA states this will help us to understand the dynamics of training 
 
@@ -200,22 +177,19 @@ def slow_perception(rgba, hidden):   #Here we take the NCA channels and compute 
     return Q
 
 
-class GenePropCA(torch.nn.Module):
-    def __init__(self, chn=12, hidden_n=96, gene_size=3):
+
+
+
+class GeneCA(torch.nn.Module):
+    def __init__(self, chn=12, hidden_n=96, gene_size=3, recurrent_gene =3, modulatory_gene=3):
         super().__init__()
-        self.chn = chn
-        self.gene_size = gene_size
-    
-        # Compute input size dynamically like IsoCA
-        dummy = torch.zeros([1, 15, 8, 8], device="cuda:0")
-        perc_chn = reduced_perception(dummy, 0).shape[1]
-
-    
-        self.w1 = torch.nn.Conv2d(perc_chn, hidden_n, 1)
-        self.w2 = torch.nn.Conv2d(hidden_n, gene_size, 1, bias=False)
+        self.public = chn - gene_size - recurrent_gene - modulatory_gene  # GeneNCA update only the RGBA+hidden channels but perceives all the channles except RA and modulatory gene channels
+        self.private = gene_size 
+        self.w1 = torch.nn.Conv2d(chn + 3 * (chn), hidden_n, 1)
+        GeneCA_layers = chn  - gene_size -recurrent_gene - modulatory_gene  
+        self.w2 = torch.nn.Conv2d(hidden_n, GeneCA_layers, 1, bias=False)
         self.w2.weight.data.zero_()
-        self.gene_size = gene_size
-
+        
         #Parameter of the RA 
         self.alpha = torch.nn.Parameter(torch.tensor(0.1)) # Decay rate of the activator/phase
         self.beta  = torch.nn.Parameter(torch.tensor(0.1)) # Decay rate of the inhibitor/injury
@@ -234,7 +208,9 @@ class GenePropCA(torch.nn.Module):
         torch.nn.init.normal_(self.mod_proj.weight, std=0.01)
         torch.nn.init.zeros_(self.mod_proj.bias)  #Initialization near of zero of the modulation projection to avoid instabilities at the beginning of training
 
-    def forward(self, x, update_rate=0.5, is_dual=False, step=0, k=4):
+        
+        
+    def forward(self, x, update_rate=0.5):
         #Initialize variables from x
         prefix = x[:, :13, ...].clone()    # RGBA + Hidden
         gene = x[:, 13:16, ...].clone()      # Gene Encoding
@@ -242,6 +218,7 @@ class GenePropCA(torch.nn.Module):
         b = x[:, 17:18].clone()
         d = x[:, 18:19].clone()
         mod = x[:, 19:22].clone()
+
 
         # Phase/Amplitude initialization
         phase, amplitude = ring_attractor_phases(a, b)
@@ -287,6 +264,100 @@ class GenePropCA(torch.nn.Module):
             b,          # 17
             d,          # 18
             mod         # 19:2
+        ], dim=1)
+
+        phase, amplitude = ring_attractor_phases(a, b)
+        return x_final, phase, amplitude
+
+
+
+class GenePropCA(torch.nn.Module):
+    def __init__(self, chn=12, hidden_n=96, gene_size=3):
+        super().__init__()
+        self.chn = chn
+        self.gene_size = gene_size
+    
+        # Compute input size dynamically like IsoCA
+        dummy = torch.zeros([1, 15, 8, 8], device="cuda:0")
+        perc_chn = reduced_perception(dummy, 0).shape[1]
+
+    
+        self.w1 = torch.nn.Conv2d(perc_chn, hidden_n, 1)
+        self.w2 = torch.nn.Conv2d(hidden_n, gene_size, 1, bias=False)
+        self.w2.weight.data.zero_()
+        self.gene_size = gene_size
+
+        #Parameter of the RA 
+        self.alpha = torch.nn.Parameter(torch.tensor(0.1)) # Decay rate of the activator/phase
+        self.beta  = torch.nn.Parameter(torch.tensor(0.1)) # Decay rate of the inhibitor/injury
+        self.omega = torch.nn.Parameter(torch.tensor(0.0)) # Angular drift
+        self.K     = torch.nn.Parameter(torch.tensor(0.5)) # Diffusion strength
+        self.kappa = torch.nn.Parameter(torch.tensor(0.5)) # Spatial coupling between activator and inhibitor
+        self.dt    = 0.1
+
+        # Inputs for the slow perception of the RA 
+        # Q -> Ia, Ib, Id
+        self.slow_input_net = torch.nn.Conv2d(5, 3, kernel_size=1)
+        # Translation from the RA state to the gene modulation output
+        # a,b,d -> m_g, m_s, m_r
+        self.modulator_net = torch.nn.Conv2d(3, 3, kernel_size=1)
+        self.mod_proj = torch.nn.Conv2d(3, hidden_n, 1)   # Projection of the RA modulation into the hidden space of the NCA network
+        torch.nn.init.normal_(self.mod_proj.weight, std=0.01)
+        torch.nn.init.zeros_(self.mod_proj.bias)  #Initialization near of zero of the modulation projection to avoid instabilities at the beginning of training
+
+    def forward(self, x, update_rate=0.5, is_dual=False, step=0, k=4):
+        #Initialize variables from x
+        prefix = x[:, :12, ...].clone()    # RGBA + Hidden
+        gene = x[:, 12:15, ...].clone()      # Gene Encoding
+        a = x[:, 15:16].clone()
+        b = x[:, 16:17].clone()
+        d = x[:, 17:18].clone()
+        mod = x[:, 18:21].clone()
+
+        # Phase/Amplitude initialization
+        phase, amplitude = ring_attractor_phases(a, b)
+
+        # Slow RA updates
+        if step % k == 0 or step == 0: # Update the RA every k steps (including the first step)
+            Q = slow_perception(x[:, :4], x[:, 4:12]) 
+            I_signals = self.slow_input_net(Q)
+            Ia, Ib, Id = I_signals[:, 0:1], I_signals[:, 1:2], I_signals[:, 2:3]
+            
+            new_a, new_b, new_d = discrete_update(
+                a, b, d, self.alpha, self.beta, self.omega, 
+                self.kappa, self.K, Ia, Ib, Id, dt=self.dt
+            )
+            new_a, new_b = consensus_update(new_a, new_b, dt=self.dt, mode='local')
+
+            # Use of the new RA states to compute the modulation for the gene propagation
+            a, b, d = new_a, new_b, new_d
+            ra_stack = torch.cat([a, b, d], dim=1)
+            mod = self.modulator_net(ra_stack)
+            
+
+        # 3. Fast NCA Logic
+        fast_input = reduced_perception(x[:, :15], 0) # We only use the RGBA + Gene for the fast perception, not the RA states
+        h = self.w1(fast_input)          
+        h = h + torch.tanh(self.mod_proj(mod))        # We project the RA modulation into the hidden space. We do this as we work with 2 time scales, the RA modulation should affect the hidden representation of the NCA before the output layer.
+        y = self.w2(torch.relu(h)) 
+        
+        # Masks
+        b_sz, c_sz, h, w = y.shape
+        update_mask = (torch.rand(b_sz, 1, h, w, device=x.device) + update_rate).floor()
+        xmp = torch.nn.functional.pad(x[:, 3:4, ...], pad=[1, 1, 1, 1], mode="circular")
+        pre_life_mask = (torch.nn.functional.max_pool2d(xmp, 3, 1, 0) > 0.1).to(x.device)
+
+        #  Update of the Gene including the masks
+        new_gene = gene + y * update_mask * pre_life_mask
+
+        # We concatenate all parts to create x_final without ever modifying the input x
+        x_final = torch.cat([
+            prefix,     # 0:12
+            new_gene,   # 12:15
+            a,          # 15
+            b,          # 16
+            d,          # 17
+            mod         # 18:21
         ], dim=1)
 
         phase, amplitude = ring_attractor_phases(a, b)
