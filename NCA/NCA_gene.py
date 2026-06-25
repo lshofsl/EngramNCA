@@ -187,7 +187,7 @@ class GeneCA(torch.nn.Module):
         self.private = gene_size 
         self.fast_channels = self.public + self.private
         self.w1 = torch.nn.Conv2d(self.fast_channels + 3 * (self.fast_channels), hidden_n, 1) 
-        self.w2 = torch.nn.Conv2d(hidden_n, chn, 1, bias=False)
+        self.w2 = torch.nn.Conv2d(hidden_n, self.public, 1, bias=False)
         self.w2.weight.data.zero_()
         
         #Parameter of the RA 
