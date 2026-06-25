@@ -210,7 +210,7 @@ class GeneCA(torch.nn.Module):
 
         
         
-    def forward(self, x, update_rate=0.5):
+    def forward(self, x, update_rate=0.5,  step=0, k=4):
         #Initialize variables from x
         prefix = x[:, :13, ...].clone()    # RGBA + Hidden
         gene = x[:, 13:16, ...].clone()      # Gene Encoding
