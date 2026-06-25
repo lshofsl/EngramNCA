@@ -185,7 +185,8 @@ class GeneCA(torch.nn.Module):
         super().__init__()
         self.public = chn - gene_size - recurrent_gene - modulatory_gene  # GeneNCA update only the RGBA+hidden channels but perceives all the channles except RA and modulatory gene channels
         self.private = gene_size 
-        self.w1 = torch.nn.Conv2d(chn + 3 * (self.public+self.private), hidden_n, 1) 
+        self.fast_channels = self.public + self.private
+        self.w1 = torch.nn.Conv2d(self.fast_channels + 3 * (self.fast_channels), hidden_n, 1) 
         self.w2 = torch.nn.Conv2d(hidden_n, chn, 1, bias=False)
         self.w2.weight.data.zero_()
         
