@@ -253,17 +253,17 @@ class GeneCA(torch.nn.Module):
         xmp = torch.nn.functional.pad(x[:, 3:4, ...], pad=[1, 1, 1, 1], mode="circular")
         pre_life_mask = (torch.nn.functional.max_pool2d(xmp, 3, 1, 0) > 0.1).to(x.device)
 
-        #  Update of the Gene including the masks
-        new_gene = gene + y * update_mask * pre_life_mask
+        #  Update of the new public channels (prefix)
+        new_public =  (y-gene) * update_mask * pre_life_mask
 
         # We concatenate all parts to create x_final without ever modifying the input x
         x_final = torch.cat([
-            prefix,     # 0:13
-            new_gene,   # 13:16
+            new_public, # 0:13
+            gene,       # 13:16
             a,          # 16
             b,          # 17
             d,          # 18
-            mod         # 19:2
+            mod         # 19:22
         ], dim=1)
 
         phase, amplitude = ring_attractor_phases(a, b)
