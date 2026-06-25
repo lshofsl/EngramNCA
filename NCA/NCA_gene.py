@@ -320,19 +320,19 @@ class GenePropCA(torch.nn.Module):
 
     def forward(self, x, update_rate=0.5, is_dual=False, step=0, k=4):
         #Initialize variables from x
-        prefix = x[:, :12, ...].clone()    # RGBA + Hidden
-        gene = x[:, 12:15, ...].clone()      # Gene Encoding
-        a = x[:, 15:16].clone()
-        b = x[:, 16:17].clone()
-        d = x[:, 17:18].clone()
-        mod = x[:, 18:21].clone()
+        prefix = x[:, :13, ...].clone()    # RGBA + Hidden
+        gene = x[:, 13:16, ...].clone()      # Gene Encoding
+        a = x[:, 16:17].clone()
+        b = x[:, 17:18].clone()
+        d = x[:, 18:19].clone()
+        mod = x[:, 19:22].clone()
 
         # Phase/Amplitude initialization
         phase, amplitude = ring_attractor_phases(a, b)
 
         # Slow RA updates
         if step % k == 0 or step == 0: # Update the RA every k steps (including the first step)
-            Q = slow_perception(x[:, :4], x[:, 4:12]) 
+            Q = slow_perception(x[:, :4], x[:, 4:13]) 
             I_signals = self.slow_input_net(Q)
             Ia, Ib, Id = I_signals[:, 0:1], I_signals[:, 1:2], I_signals[:, 2:3]
             
@@ -349,7 +349,7 @@ class GenePropCA(torch.nn.Module):
             
 
         # 3. Fast NCA Logic
-        fast_input = reduced_perception(x[:, :15], 0) # We only use the RGBA + Gene for the fast perception, not the RA states
+        fast_input = reduced_perception(x[:, :16], 0) # We only use the RGBA + Gene for the fast perception, not the RA states
         h = self.w1(fast_input)          
         h = h + torch.tanh(self.mod_proj(mod))        # We project the RA modulation into the hidden space. We do this as we work with 2 time scales, the RA modulation should affect the hidden representation of the NCA before the output layer.
         y = self.w2(torch.relu(h)) 
@@ -361,7 +361,7 @@ class GenePropCA(torch.nn.Module):
         pre_life_mask = (torch.nn.functional.max_pool2d(xmp, 3, 1, 0) > 0.1).to(x.device)
 
         #  Update of the Gene including the masks
-        new_gene = gene + y * update_mask * pre_life_mask
+        new_prefix = prefix + y * update_mask * pre_life_mask
 
         # We concatenate all parts to create x_final without ever modifying the input x
         x_final = torch.cat([
