@@ -255,7 +255,20 @@ class GeneCA(torch.nn.Module):
 
         #  Update of the new public channels (prefix)
         new_public =  (y-gene) * update_mask * pre_life_mask
+        # 3. Fast NCA Logic
+        fast_input = reduced_perception(x[:, :16], 0) # We only use the RGBA + Gene for the fast perception, not the RA states
+        h = self.w1(fast_input)          
+        h = h + torch.tanh(self.mod_proj(mod))        # We project the RA modulation into the hidden space. We do this as we work with 2 time scales, the RA modulation should affect the hidden representation of the NCA before the output layer.
+        y = self.w2(torch.relu(h)) 
+        
+        # Masks
+        b_sz, c_sz, h, w = y.shape
+        update_mask = (torch.rand(b_sz, 1, h, w, device=x.device) + update_rate).floor()
+        xmp = torch.nn.functional.pad(x[:, 3:4, ...], pad=[1, 1, 1, 1], mode="circular")
+        pre_life_mask = (torch.nn.functional.max_pool2d(xmp, 3, 1, 0) > 0.1).to(x.device)
 
+        #  Update of the new public channels (prefix)
+        new_public =  prefix + (y * update_mask * pre_life_mask)
         # We concatenate all parts to create x_final without ever modifying the input x
         x_final = torch.cat([
             new_public, # 0:13
